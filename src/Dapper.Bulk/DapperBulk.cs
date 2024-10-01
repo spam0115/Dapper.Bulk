@@ -9,339 +9,296 @@ using System.Threading.Tasks;
 
 [assembly: InternalsVisibleTo("Dapper.Bulk.Tests")]
 
-namespace Dapper.Bulk;
-
-/// <summary>
-/// Bulk inserts for Dapper
-/// </summary>
-public static class DapperBulk
+namespace Dapper.Bulk
 {
     /// <summary>
-    /// Inserts entities into table <typeparamref name="T"/>s (by default).
+    /// Bulk inserts for Dapper
     /// </summary>
-    /// <typeparam name="T">The type being inserted.</typeparam>
-    /// <param name="connection">Open SqlConnection</param>
-    /// <param name="data">Entities to insert</param>
-    /// <param name="transaction">The transaction to run under, null (the default) if none</param>
-    /// <param name="batchSize">Number of bulk items inserted together, 0 (the default) if all</param>
-    /// <param name="bulkCopyTimeout">Number of seconds before bulk command execution timeout, 30 (the default)</param>
-    /// <param name="identityInsert">Usage of db generated ids. By default DB generated IDs are used (identityInsert=false)</param>
-    public static void BulkInsert<T>(this SqlConnection connection, IEnumerable<T> data, SqlTransaction transaction = null, int batchSize = 0, int bulkCopyTimeout = 30, bool identityInsert = false)
+    public static class DapperBulk
     {
-        var type = typeof(T);
-        BulkInsert(connection,type,data.Cast<object>(),transaction,batchSize,bulkCopyTimeout,identityInsert);
-    }
-
-    /// <summary>
-    /// Inserts entities into table.
-    /// by default, the table is named after the data type specified.
-    /// </summary>
-    /// <param name="connection">Open SqlConnection</param>
-    /// <param name="type">The type being inserted.</param>
-    /// <param name="data">Entities to insert</param>
-    /// <param name="transaction">The transaction to run under, null (the default) if none</param>
-    /// <param name="batchSize">Number of bulk items inserted together, 0 (the default) if all</param>
-    /// <param name="bulkCopyTimeout">Number of seconds before bulk command execution timeout, 30 (the default)</param>
-    /// <param name="identityInsert">Usage of db generated ids. By default DB generated IDs are used (identityInsert=false)</param>
-    public static void BulkInsert(this SqlConnection connection, Type type, IEnumerable<object> data, SqlTransaction transaction = null, int batchSize = 0, int bulkCopyTimeout = 30, bool identityInsert = false)
-    { 
-        var tableName = TableMapper.GetTableName(type);
-        var allProperties = PropertiesCache.TypePropertiesCache(type);
-        var keyProperties = PropertiesCache.KeyPropertiesCache(type);
-        var computedProperties = PropertiesCache.ComputedPropertiesCache(type);
-        var columns = PropertiesCache.GetColumnNamesCache(type);
-
-        var insertProperties = allProperties.Except(computedProperties).ToList();
-        
-        if (!identityInsert)
-            insertProperties = insertProperties.Except(keyProperties).ToList();
-
-        var (identityInsertOn, identityInsertOff, sqlBulkCopyOptions) = GetIdentityInsertOptions(identityInsert, tableName);
-        
-        var insertPropertiesString = GetColumnsStringSqlServer(insertProperties, columns);
-        var tempToBeInserted = $"#TempInsert_{tableName}".Replace(".", string.Empty);
-
-        connection.Execute($@"SELECT TOP 0 {insertPropertiesString} INTO {tempToBeInserted} FROM {FormatTableName(tableName)} target WITH(NOLOCK);", null, transaction);
-
-        using (var bulkCopy = new SqlBulkCopy(connection, sqlBulkCopyOptions, transaction))
+        private class PropertiesContainer
         {
-            bulkCopy.BulkCopyTimeout = bulkCopyTimeout;
-            bulkCopy.BatchSize = batchSize;
-            bulkCopy.DestinationTableName = tempToBeInserted;
-            bulkCopy.WriteToServer(ToDataTable(data, insertProperties).CreateDataReader());
+            public List<PropertyInfo> AllProperties;
+            public List<PropertyInfo> KeyProperties;
+            public List<PropertyInfo> ComputedProperties;
+            public IReadOnlyDictionary<string, string> ColumnNameMap;
         }
 
-        connection.Execute($@"
-                {identityInsertOn}
-                INSERT INTO {FormatTableName(tableName)}({insertPropertiesString}) 
-                SELECT {insertPropertiesString} FROM {tempToBeInserted}
-                {identityInsertOff}
-                DROP TABLE {tempToBeInserted};", null, transaction);
-    }
-
-    /// <summary>
-    /// Inserts entities into table <typeparamref name="T"/>s (by default) returns inserted entities.
-    /// </summary>
-    /// <typeparam name="T">The element type of the array</typeparam>
-    /// <param name="connection">Open SqlConnection</param>
-    /// <param name="data">Entities to insert</param>
-    /// <param name="transaction">The transaction to run under, null (the default) if none</param>
-    /// <param name="batchSize">Number of bulk items inserted together, 0 (the default) if all</param>
-    /// <param name="bulkCopyTimeout">Number of seconds before bulk command execution timeout, 30 (the default)</param>
-    /// <param name="identityInsert">Usage of db generated ids. By default DB generated IDs are used (identityInsert=false)</param>
-    /// <returns>Inserted entities</returns>
-    public static IEnumerable<T> BulkInsertAndSelect<T>(this SqlConnection connection, IEnumerable<T> data, SqlTransaction transaction = null, int batchSize = 0, int bulkCopyTimeout = 30, bool identityInsert = false)
-    {
-        var type = typeof(T);
-        var tableName = TableMapper.GetTableName(type);
-        var allProperties = PropertiesCache.TypePropertiesCache(type);
-        var keyProperties = PropertiesCache.KeyPropertiesCache(type);
-        var computedProperties = PropertiesCache.ComputedPropertiesCache(type);
-        var columns = PropertiesCache.GetColumnNamesCache(type);
-
-        if (keyProperties.Count == 0)
+        /// <summary>
+        /// Inserts entities into table <typeparamref name="T"/>s (by default).
+        /// </summary>
+        public static void BulkInsert<T>(this SqlConnection connection, IEnumerable<T> data, SqlTransaction transaction = null, int batchSize = 0, int bulkCopyTimeout = 30, bool identityInsert = false)
         {
-            var dataList = data.ToList();
-            connection.BulkInsert(dataList, transaction, batchSize, bulkCopyTimeout);
-            return dataList;
+            BulkInsert(connection, typeof(T), data.Cast<object>(), transaction, batchSize, bulkCopyTimeout, identityInsert);
         }
 
-        var insertProperties = allProperties.Except(computedProperties).ToList();
-        
-        if (!identityInsert)
-            insertProperties = insertProperties.Except(keyProperties).ToList();
-
-        var (identityInsertOn, identityInsertOff, sqlBulkCopyOptions) = GetIdentityInsertOptions(identityInsert, tableName);
-        
-        var keyPropertiesString = GetColumnsStringSqlServer(keyProperties,columns);
-        var keyPropertiesInsertedString = GetColumnsStringSqlServer(keyProperties, columns, "inserted.");
-        var insertPropertiesString = GetColumnsStringSqlServer(insertProperties, columns);
-        var allPropertiesString = GetColumnsStringSqlServer(allProperties, columns, "target.");
-
-        var tempToBeInserted = $"#TempInsert_{tableName}".Replace(".", string.Empty);
-        var tempInsertedWithIdentity = $"@TempInserted_{tableName}".Replace(".", string.Empty);
-
-        connection.Execute($"SELECT TOP 0 {insertPropertiesString} INTO {tempToBeInserted} FROM {FormatTableName(tableName)} target WITH(NOLOCK);", null, transaction);
-
-        using (var bulkCopy = new SqlBulkCopy(connection, sqlBulkCopyOptions, transaction))
+        /// <summary>
+        /// Inserts entities into table.
+        /// </summary>
+        public static void BulkInsert(this SqlConnection connection, Type type, IEnumerable<object> data, SqlTransaction transaction = null, int batchSize = 0, int bulkCopyTimeout = 30, bool identityInsert = false)
         {
-            bulkCopy.BulkCopyTimeout = bulkCopyTimeout;
-            bulkCopy.BatchSize = batchSize;
-            bulkCopy.DestinationTableName = tempToBeInserted;
-            bulkCopy.WriteToServer(ToDataTable(data, insertProperties).CreateDataReader());
-        }
+            var properties = GetProperties(type);
+            var (tableName, tempTableName, identityInsertOnStr, identityInsertOffStr, insertPropertiesStr, insertProperties, sqlBulkCopyOptions) = PrepareInfo(type, identityInsert, properties);
 
-        var table = string.Join(", ", keyProperties.Select(k => $"[{(columns.ContainsKey(k.Name) ? columns[k.Name] : k.Name)}] bigint"));
-        var joinOn = string.Join(" AND ", keyProperties.Select(k => $"target.[{(columns.ContainsKey(k.Name) ? columns[k.Name] : k.Name)}] = ins.[{(columns.ContainsKey(k.Name) ? columns[k.Name] : k.Name)}]"));
-        
-        return connection.Query<T>($@"
-                {identityInsertOn}
-                DECLARE {tempInsertedWithIdentity} TABLE ({table})
-                INSERT INTO {FormatTableName(tableName)}({insertPropertiesString}) 
-                OUTPUT {keyPropertiesInsertedString} INTO {tempInsertedWithIdentity} ({keyPropertiesString})
-                SELECT {insertPropertiesString} FROM {tempToBeInserted}
-                {identityInsertOff}
+            connection.Execute($@"SELECT TOP 0 {insertPropertiesStr} INTO {tempTableName} FROM {FormatTableName(tableName)} target WITH(NOLOCK);", null, transaction);
 
-                SELECT {allPropertiesString}
-                FROM {FormatTableName(tableName)} target INNER JOIN {tempInsertedWithIdentity} ins ON {joinOn}
-                
-                DROP TABLE {tempToBeInserted};", null, transaction);
-    }
-
-    /// <summary>
-    /// Inserts entities into table <typeparamref name="T"/>s (by default) asynchronously.
-    /// </summary>
-    /// <typeparam name="T">The type being inserted.</typeparam>
-    /// <param name="connection">Open SqlConnection</param>
-    /// <param name="data">Entities to insert</param>
-    /// <param name="transaction">The transaction to run under, null (the default) if none</param>
-    /// <param name="batchSize">Number of bulk items inserted together, 0 (the default) if all</param>
-    /// <param name="bulkCopyTimeout">Number of seconds before bulk command execution timeout, 30 (the default)</param>
-    /// <param name="identityInsert">Usage of db generated ids. By default DB generated IDs are used (identityInsert=false)</param>
-    public static async Task BulkInsertAsync<T>(this SqlConnection connection, IEnumerable<T> data, SqlTransaction transaction = null, int batchSize = 0, int bulkCopyTimeout = 30, bool identityInsert = false)
-    {
-        var type = typeof(T);
-        var tableName = TableMapper.GetTableName(type);
-        var allProperties = PropertiesCache.TypePropertiesCache(type);
-        var keyProperties = PropertiesCache.KeyPropertiesCache(type);
-        var computedProperties = PropertiesCache.ComputedPropertiesCache(type);
-        var columns = PropertiesCache.GetColumnNamesCache(type);
-
-        var insertProperties = allProperties.Except(computedProperties).ToList();
-        
-        if (!identityInsert)
-            insertProperties = insertProperties.Except(keyProperties).ToList();
-
-        var (identityInsertOn, identityInsertOff, sqlBulkCopyOptions) = GetIdentityInsertOptions(identityInsert, tableName);
-        
-        var insertPropertiesString = GetColumnsStringSqlServer(insertProperties,columns);
-        var tempToBeInserted = $"#TempInsert_{tableName}".Replace(".", string.Empty);
-
-        await connection.ExecuteAsync($@"SELECT TOP 0 {insertPropertiesString} INTO {tempToBeInserted} FROM {FormatTableName(tableName)} target WITH(NOLOCK);", null, transaction);
-
-        using (var bulkCopy = new SqlBulkCopy(connection, sqlBulkCopyOptions, transaction))
-        {
-            bulkCopy.BulkCopyTimeout = bulkCopyTimeout;
-            bulkCopy.BatchSize = batchSize;
-            bulkCopy.DestinationTableName = tempToBeInserted;
-            await bulkCopy.WriteToServerAsync(ToDataTable(data, insertProperties).CreateDataReader());
-        }
-
-        await connection.ExecuteAsync($@"
-                {identityInsertOn}
-                INSERT INTO {FormatTableName(tableName)}({insertPropertiesString}) 
-                SELECT {insertPropertiesString} FROM {tempToBeInserted}
-                {identityInsertOff}
-
-                DROP TABLE {tempToBeInserted};", null, transaction);
-    }
-
-    /// <summary>
-    /// Inserts entities into table <typeparamref name="T"/>s (by default) asynchronously and returns inserted entities.
-    /// </summary>
-    /// <typeparam name="T">The type being inserted.</typeparam>
-    /// <param name="connection">Open SqlConnection</param>
-    /// <param name="data">Entities to insert</param>
-    /// <param name="transaction">The transaction to run under, null (the default) if none</param>
-    /// <param name="batchSize">Number of bulk items inserted together, 0 (the default) if all</param>
-    /// <param name="bulkCopyTimeout">Number of seconds before bulk command execution timeout, 30 (the default)</param>
-    /// <param name="identityInsert">Usage of db generated ids. By default DB generated IDs are used (identityInsert=false)</param>
-    /// <returns>Inserted entities</returns>
-    public static async Task<IEnumerable<T>> BulkInsertAndSelectAsync<T>(this SqlConnection connection, IEnumerable<T> data, SqlTransaction transaction = null, int batchSize = 0, int bulkCopyTimeout = 30, bool identityInsert = false)
-    {
-        var type = typeof(T);
-        var tableName = TableMapper.GetTableName(type);
-        var allProperties = PropertiesCache.TypePropertiesCache(type);
-        var keyProperties = PropertiesCache.KeyPropertiesCache(type);
-        var computedProperties = PropertiesCache.ComputedPropertiesCache(type);
-        var columns = PropertiesCache.GetColumnNamesCache(type);
-
-        if (keyProperties.Count == 0)
-        {
-            var dataList = data.ToList();
-            await connection.BulkInsertAsync(dataList, transaction, batchSize, bulkCopyTimeout);
-            return dataList;
-        }
-
-        var insertProperties = allProperties.Except(computedProperties).ToList();
-        
-        if (!identityInsert)
-            insertProperties = insertProperties.Except(keyProperties).ToList();
-
-        var (identityInsertOn, identityInsertOff, sqlBulkCopyOptions) = GetIdentityInsertOptions(identityInsert, tableName);
-     
-        var keyPropertiesString = GetColumnsStringSqlServer(keyProperties,columns);
-        var keyPropertiesInsertedString = GetColumnsStringSqlServer(keyProperties,columns, "inserted.");
-        var insertPropertiesString = GetColumnsStringSqlServer(insertProperties,columns);
-        var allPropertiesString = GetColumnsStringSqlServer(allProperties, columns, "target.");
-
-        var tempToBeInserted = $"#TempInsert_{tableName}".Replace(".", string.Empty);
-        var tempInsertedWithIdentity = $"@TempInserted_{tableName}".Replace(".", string.Empty);
-
-        await connection.ExecuteAsync($@"SELECT TOP 0 {insertPropertiesString} INTO {tempToBeInserted} FROM {FormatTableName(tableName)} target WITH(NOLOCK);", null, transaction);
-
-        using (var bulkCopy = new SqlBulkCopy(connection,sqlBulkCopyOptions, transaction))
-        {
-            bulkCopy.BulkCopyTimeout = bulkCopyTimeout;
-            bulkCopy.BatchSize = batchSize;
-            bulkCopy.DestinationTableName = tempToBeInserted;
-            await bulkCopy.WriteToServerAsync(ToDataTable(data, insertProperties).CreateDataReader());
-        }
-
-        var table = string.Join(", ", keyProperties.Select(k => $"[{(columns.ContainsKey(k.Name) ? columns[k.Name] : k.Name)}] bigint"));
-        var joinOn = string.Join(" AND ", keyProperties.Select(k => $"target.[{(columns.ContainsKey(k.Name) ? columns[k.Name] : k.Name)}] = ins.[{(columns.ContainsKey(k.Name) ? columns[k.Name] : k.Name)}]"));
-        return await connection.QueryAsync<T>($@"
-                {identityInsertOn}
-                DECLARE {tempInsertedWithIdentity} TABLE ({table})
-                INSERT INTO {FormatTableName(tableName)}({insertPropertiesString}) 
-                OUTPUT {keyPropertiesInsertedString} INTO {tempInsertedWithIdentity} ({keyPropertiesString})
-                SELECT {insertPropertiesString} FROM {tempToBeInserted}
-                {identityInsertOff}
-                SELECT {allPropertiesString}
-                FROM {FormatTableName(tableName)} target INNER JOIN {tempInsertedWithIdentity} ins ON {joinOn}
-
-                DROP TABLE {tempToBeInserted};", null, transaction);
-    }
-
-    private static string GetColumnsStringSqlServer(IEnumerable<PropertyInfo> properties, IReadOnlyDictionary<string, string> columnNames, string tablePrefix = null)
-    {
-        if (tablePrefix == "target.")
-        {
-            return string.Join(", ", properties.Select(property => $"{tablePrefix}[{columnNames[property.Name]}] as [{property.Name}] "));
-        }
-
-        return string.Join(", ", properties.Select(property => $"{tablePrefix}[{columnNames[property.Name]}] "));
-    }
-    
-    private static DataTable ToDataTable<T>(IEnumerable<T> data, IList<PropertyInfo> properties)
-    {
-        var typeCasts = new Type[properties.Count];
-        for (var i = 0; i < properties.Count; i++)
-        {
-            if (properties[i].PropertyType.IsEnum)
+            using (var bulkCopy = new SqlBulkCopy(connection, sqlBulkCopyOptions, transaction))
             {
-                typeCasts[i] = Enum.GetUnderlyingType(properties[i].PropertyType);
-            }
-            else
-            {
-                typeCasts[i] = null;
-            }
-        }
-
-        var dataTable = new DataTable();
-        for (var i = 0; i < properties.Count; i++)
-        {
-            // Nullable types are not supported.
-            var propertyNonNullType = Nullable.GetUnderlyingType(properties[i].PropertyType) ?? properties[i].PropertyType;
-            dataTable.Columns.Add(properties[i].Name, typeCasts[i] ?? propertyNonNullType);
-        }
-
-        foreach (var item in data)
-        {
-            var values = new object[properties.Count];
-            for (var i = 0; i < properties.Count; i++)
-            {
-                var value = properties[i].GetValue(item, null);
-                values[i] = typeCasts[i] == null ? value : Convert.ChangeType(value, typeCasts[i]);
+                bulkCopy.BulkCopyTimeout = bulkCopyTimeout;
+                bulkCopy.BatchSize = batchSize;
+                bulkCopy.DestinationTableName = tempTableName;
+                bulkCopy.WriteToServer(ToDataTable(data, insertProperties).CreateDataReader());
             }
 
-            dataTable.Rows.Add(values);
+            var sqlString = GetInsertSql(tableName, tempTableName, identityInsertOnStr, identityInsertOffStr, insertPropertiesStr);
+            connection.Execute(sqlString, null, transaction);
         }
 
-        return dataTable;
-    }
-
-    internal static string FormatTableName(string table)
-    {
-        if (string.IsNullOrEmpty(table))
+        
+        /// <summary>
+        /// Inserts entities into table <typeparamref name="T"/>s (by default) returns inserted entities.
+        /// </summary>
+        public static IEnumerable<T> BulkInsertAndSelect<T>(this SqlConnection connection, IEnumerable<T> data, SqlTransaction transaction = null, int batchSize = 0, int bulkCopyTimeout = 30, bool identityInsert = false)
         {
-            return table;
-        }
+            var type = typeof(T);
 
-        var parts = table.Split('.');
+            var properties = GetProperties(type);
+            var (tableName, tempTableName, identityInsertOnStr, identityInsertOffStr, insertPropertiesStr, insertProperties, sqlBulkCopyOptions) = PrepareInfo(type, identityInsert, properties);
 
-        if (parts.Length == 1)
-        {
-            return $"[{table}]";
-        }
-
-        var tableName = "";
-        for (int i = 0; i < parts.Length; i++)
-        {
-            tableName += $"[{parts[i]}]";
-            if (i + 1 < parts.Length)
+            if (!properties.KeyProperties.Any())
             {
-                tableName += ".";
+                var dataList = data.ToList();
+                connection.BulkInsert(dataList, transaction, batchSize, bulkCopyTimeout);
+                return dataList;
             }
+
+            var keyPropertiesStr = GetColumnsStringSqlServer(properties.KeyProperties, properties.ColumnNameMap);
+            var keyPropertiesInsertedStr = GetColumnsStringSqlServer(properties.KeyProperties, properties.ColumnNameMap, "inserted.");
+            var allPropertiesStr = GetColumnsStringSqlServer(PropertiesCache.TypePropertiesCache(type), properties.ColumnNameMap, "target.");
+
+            var tempInsertedWithIdentity = $"@TempInserted_{tableName}".Replace(".", string.Empty);
+
+            connection.Execute($@"SELECT TOP 0 {insertPropertiesStr} INTO {tempTableName} FROM {FormatTableName(tableName)} target WITH(NOLOCK);", null, transaction);
+
+            using (var bulkCopy = new SqlBulkCopy(connection, sqlBulkCopyOptions, transaction))
+            {
+                bulkCopy.BulkCopyTimeout = bulkCopyTimeout;
+                bulkCopy.BatchSize = batchSize;
+                bulkCopy.DestinationTableName = tempTableName;
+                bulkCopy.WriteToServer(ToDataTable(data, insertProperties).CreateDataReader());
+            }
+
+            var tableStr = GetKeysString(properties.KeyProperties, properties.ColumnNameMap);
+            var joinOnStr = GetJoinString(properties);
+
+            var sqlStr = GetInsertAndSelectSql(tableName, identityInsertOnStr, identityInsertOffStr, tempTableName, insertPropertiesStr, keyPropertiesStr, keyPropertiesInsertedStr, allPropertiesStr, tempInsertedWithIdentity, tableStr, joinOnStr);
+            return connection.Query<T>(sqlStr, null, transaction);
         }
 
-        return tableName;
-    }
+        /// <summary>
+        /// Inserts entities into table <typeparamref name="T"/>s (by default) asynchronously.
+        /// </summary>
+        public static async Task BulkInsertAsync<T>(this SqlConnection connection, IEnumerable<T> data, SqlTransaction transaction = null, int batchSize = 0, int bulkCopyTimeout = 30, bool identityInsert = false)
+        {
+            var type = typeof(T);
+            var properties = GetProperties(type);
+            var (tableName, tempTableName, identityInsertOnStr, identityInsertOffStr, insertPropertiesStr, insertProperties, sqlBulkCopyOptions) = PrepareInfo(type, identityInsert, properties);
 
-    private static (string identityInsertOn, string identityInsertOff, SqlBulkCopyOptions bulkCopyOptions)
-        GetIdentityInsertOptions(bool identityInsert, string tableName)
-        => identityInsert
-            ? ($"SET IDENTITY_INSERT {FormatTableName(tableName)} ON",
-                $"SET IDENTITY_INSERT {FormatTableName(tableName)} OFF", SqlBulkCopyOptions.KeepIdentity)
-            : (string.Empty, string.Empty, SqlBulkCopyOptions.Default);
+            await connection.ExecuteAsync($@"SELECT TOP 0 {insertPropertiesStr} INTO {tempTableName} FROM {FormatTableName(tableName)} target WITH(NOLOCK);", null, transaction);
+
+            using (var bulkCopy = new SqlBulkCopy(connection, sqlBulkCopyOptions, transaction))
+            {
+                bulkCopy.BulkCopyTimeout = bulkCopyTimeout;
+                bulkCopy.BatchSize = batchSize;
+                bulkCopy.DestinationTableName = tempTableName;
+                await bulkCopy.WriteToServerAsync(ToDataTable(data, insertProperties).CreateDataReader());
+            }
+
+            var sqlString = GetInsertSql(tableName, tempTableName, identityInsertOnStr, identityInsertOffStr, insertPropertiesStr);
+            await connection.ExecuteAsync(sqlString, null, transaction);
+        }
+
+        /// <summary>
+        /// Inserts entities into table <typeparamref name="T"/>s (by default) asynchronously and returns inserted entities.
+        /// </summary>
+        public static async Task<IEnumerable<T>> BulkInsertAndSelectAsync<T>(this SqlConnection connection, IEnumerable<T> data, SqlTransaction transaction = null, int batchSize = 0, int bulkCopyTimeout = 30, bool identityInsert = false)
+        {
+            var type = typeof(T);
+            var properties = GetProperties(type);
+            var (tableName, tempTableName, identityInsertOnStr, identityInsertOffStr, insertPropertiesStr, insertProperties, sqlBulkCopyOptions) = PrepareInfo(type, identityInsert, properties);
+
+            if (!properties.KeyProperties.Any())
+            {
+                var dataList = data.ToList();
+                await connection.BulkInsertAsync(dataList, transaction, batchSize, bulkCopyTimeout);
+                return dataList;
+            }
+
+            var keyPropertiesStr = GetColumnsStringSqlServer(properties.KeyProperties, properties.ColumnNameMap);
+            var keyPropertiesInsertedStr = GetColumnsStringSqlServer(properties.KeyProperties, properties.ColumnNameMap, "inserted.");
+            var allPropertiesStr = GetColumnsStringSqlServer(PropertiesCache.TypePropertiesCache(type), properties.ColumnNameMap, "target.");
+
+            var tempInsertedWithIdentity = $"@TempInserted_{tableName}".Replace(".", string.Empty);
+
+            await connection.ExecuteAsync($@"SELECT TOP 0 {insertPropertiesStr} INTO {tempTableName} FROM {FormatTableName(tableName)} target WITH(NOLOCK);", null, transaction);
+
+            using (var bulkCopy = new SqlBulkCopy(connection, sqlBulkCopyOptions, transaction))
+            {
+                bulkCopy.BulkCopyTimeout = bulkCopyTimeout;
+                bulkCopy.BatchSize = batchSize;
+                bulkCopy.DestinationTableName = tempTableName;
+                await bulkCopy.WriteToServerAsync(ToDataTable(data, insertProperties).CreateDataReader());
+            }
+
+            var tableStr = GetKeysString(properties.KeyProperties, properties.ColumnNameMap);
+            string joinOnStr = GetJoinString(properties);
+
+            var sqlStr = GetInsertAndSelectSql(tableName, identityInsertOnStr, identityInsertOffStr, tempTableName, insertPropertiesStr, keyPropertiesStr, keyPropertiesInsertedStr, allPropertiesStr, tempInsertedWithIdentity, tableStr, joinOnStr);
+            return await connection.QueryAsync<T>(sqlStr, null, transaction);
+        }
+
+        private static string GetJoinString(PropertiesContainer properties)
+        {
+            var str = properties.KeyProperties.Select(k => 
+                $"target.[{(properties.ColumnNameMap.ContainsKey(k.Name) ? properties.ColumnNameMap[k.Name] : k.Name)}] = ins.[{(properties.ColumnNameMap.ContainsKey(k.Name) ? properties.ColumnNameMap[k.Name] : k.Name)}]");
+            return string.Join(" AND ", str);
+        }
+        
+        private static PropertiesContainer GetProperties(Type type)
+        {
+            var properties = new PropertiesContainer();
+            properties.AllProperties = PropertiesCache.TypePropertiesCache(type);
+            properties.KeyProperties = PropertiesCache.KeyPropertiesCache(type);
+            properties.ComputedProperties = PropertiesCache.ComputedPropertiesCache(type);
+            properties.ColumnNameMap = PropertiesCache.GetColumnNamesCache(type);
+
+            return properties;
+        }
+
+        private static (string tableName, string tempTableName, string identityInsertOn, string identityInsertOff, string insertPropertiesStr, List<PropertyInfo> insertProperties,  SqlBulkCopyOptions sqlBulkCopyOptions) PrepareInfo(Type type, bool identityInsert, PropertiesContainer properties)
+        {
+            var insertProperties = properties.AllProperties.Except(properties.ComputedProperties).ToList();
+            if (!identityInsert)
+                insertProperties = insertProperties.Except(properties.KeyProperties).ToList();
+            var insertPropertiesStr = GetColumnsStringSqlServer(insertProperties, properties.ColumnNameMap);
+
+            var tableName = TableMapper.GetTableName(type);
+            var tempTableName = GetTempTableName(tableName);
+
+            var keyIsGuid = AnyKeyIsGuid(properties.KeyProperties);
+            var (identityInsertOn, identityInsertOff, sqlBulkCopyOptions) = GetIdentityInsertOptions(identityInsert, keyIsGuid, tableName);
+
+            return (tableName, tempTableName, identityInsertOn, identityInsertOff, insertPropertiesStr, insertProperties, sqlBulkCopyOptions);
+        }
+
+        private static string GetTempTableName(string tableName) => $"#TempInsert_{tableName}".Replace(".", string.Empty);
+
+        /// <summary>
+        /// this provides support for the feature allowing object property names to be different than table columns names.
+        /// </summary>
+        /// <param name="properties"></param>
+        /// <param name="columnNames"></param>
+        /// <param name="tablePrefix"></param>
+        /// <returns></returns>
+        private static string GetColumnsStringSqlServer(IEnumerable<PropertyInfo> properties, IReadOnlyDictionary<string, string> columnNames, string tablePrefix = null)
+        {
+            if (tablePrefix == "target.")
+            {
+                return string.Join(", ", properties.Select(property => $"{tablePrefix}[{columnNames[property.Name]}] as [{property.Name}] "));
+            }
+
+            return string.Join(", ", properties.Select(property => $"{tablePrefix}[{columnNames[property.Name]}] "));
+        }
+
+        private static DataTable ToDataTable<T>(IEnumerable<T> data, IList<PropertyInfo> properties)
+        {
+            var dataTable = new DataTable();
+            var typeCasts = properties.Select(p => p.PropertyType.IsEnum ? Enum.GetUnderlyingType(p.PropertyType) : null).ToArray();
+
+            foreach (var property in properties)
+            {
+                var propertyType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+                dataTable.Columns.Add(property.Name, typeCasts[properties.IndexOf(property)] ?? propertyType);
+            }
+
+            foreach (var item in data)
+            {
+                var values = properties.Select((p, i) => typeCasts[i] == null ? p.GetValue(item) : Convert.ChangeType(p.GetValue(item), typeCasts[i])).ToArray();
+                dataTable.Rows.Add(values);
+            }
+
+            return dataTable;
+        }
+
+        internal static string FormatTableName(string table)
+        {
+            if (string.IsNullOrEmpty(table)) return table;
+            return string.Join(".", table.Split('.').Select(part => $"[{part}]"));
+        }
+
+        private static (string identityInsertOn, string identityInsertOff, SqlBulkCopyOptions bulkCopyOptions) GetIdentityInsertOptions(bool identityInsert, bool keyIsGuid, string tableName)
+        {
+            var identityInsertOn = string.Empty;
+            var identityInsertOff = string.Empty;
+            var bulkCopyOptions = identityInsert ? SqlBulkCopyOptions.KeepIdentity : SqlBulkCopyOptions.Default;
+
+            if (identityInsert && !keyIsGuid)
+            {
+                identityInsertOn = $"SET IDENTITY_INSERT {FormatTableName(tableName)} ON";
+                identityInsertOff = $"SET IDENTITY_INSERT {FormatTableName(tableName)} OFF";
+            }
+
+            return (identityInsertOn, identityInsertOff, bulkCopyOptions);
+        }
+
+        private static bool AnyKeyIsGuid(IEnumerable<PropertyInfo> propertyInfos) => propertyInfos.Any(p => p.PropertyType == typeof(Guid));
+
+        private static string GetKeysString(IEnumerable<PropertyInfo> keyProperties, IReadOnlyDictionary<string, string> columns)
+        {
+            var keys = keyProperties.Select(k =>
+            {
+                if (columns.ContainsKey(k.Name))
+                {
+                    var typeString = k.PropertyType.Name switch
+                    {
+                        "Guid" => "uniqueidentifier",
+                        "Int32" or "UInt32" => "int",
+                        "Int64" or "UInt64" => "bigint",
+                        _ => throw new ArgumentException($"Invalid data type used in primary key. Type='{k.PropertyType.Name}'.")
+                    };
+                    return $"[{columns[k.Name]}] {typeString}";
+                }
+                else
+                {
+                    return $"[{k.Name}]" + " bigint";
+                }
+            });
+
+            return String.Join(",", keys);
+        }
+
+        private static string GetInsertSql(string tableName, string tempTableNameStr, string identityInsertOnStr, string identityInsertOffStr, string insertPropertiesStr)
+        {
+            return 
+                $@"{identityInsertOnStr}
+                INSERT INTO {FormatTableName(tableName)} ({insertPropertiesStr}) 
+                SELECT {insertPropertiesStr} FROM {tempTableNameStr}
+                {identityInsertOffStr}
+                DROP TABLE {tempTableNameStr};";
+        }
+
+        private static string GetInsertAndSelectSql(string tableName, string identityInsertOnStr, string identityInsertOffStr, string tempTableName, string insertPropertiesStr, string keyPropertiesStr, string keyPropertiesInsertedStr, string allPropertiesStr, string tempInsertedWithIdentity, string tableStr, string joinOnStr)
+        {
+            return 
+                $@"{identityInsertOnStr}
+                DECLARE {tempInsertedWithIdentity} TABLE ({tableStr})
+                INSERT INTO {FormatTableName(tableName)} ({insertPropertiesStr}) 
+                    OUTPUT {keyPropertiesInsertedStr} INTO {tempInsertedWithIdentity} ({keyPropertiesStr})
+                SELECT {insertPropertiesStr} FROM {tempTableName}
+                {identityInsertOffStr}
+                SELECT {allPropertiesStr}
+                FROM {FormatTableName(tableName)} target INNER JOIN {tempInsertedWithIdentity} ins ON {joinOnStr}
+                DROP TABLE {tempTableName};";
+        }
+    }
 }
