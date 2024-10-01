@@ -30,24 +30,6 @@ public class CustomColumnNameTests: SqlServerTestSuite
     }
 
     [Fact]
-    public void InsertBulk()
-    {
-        var data = new List<CustomColumnName>();
-        for (var i = 0; i < 10; i++)
-        {
-            data.Add(new CustomColumnName { Name = Guid.NewGuid().ToString() , LongCol = i * 1000, IntCol = i});
-        }
-
-        using var connection = GetConnection();
-        connection.Open();
-        var inserted = connection.BulkInsertAndSelect(data).ToList();
-        for (var i = 0; i < data.Count; i++)
-        {
-            IsValidInsert(inserted[i], data[i]);
-        }
-    }
-
-    [Fact]
     public void InsertSingle()
     {
         var item = new CustomColumnName { Name = Guid.NewGuid().ToString(), LongCol = 1000, IntCol = 1 };
@@ -76,6 +58,24 @@ public class CustomColumnNameTests: SqlServerTestSuite
         using var transaction = connection.BeginTransaction();
         var inserted = connection.BulkInsertAndSelect(new List<CustomColumnName> { item }, transaction).First();
         IsValidInsert(inserted, item);
+    }
+
+    [Fact]
+    public void InsertBulk()
+    {
+        var data = new List<CustomColumnName>();
+        for (var i = 0; i < 10; i++)
+        {
+            data.Add(new CustomColumnName { Name = Guid.NewGuid().ToString(), LongCol = i * 1000, IntCol = i });
+        }
+
+        using var connection = GetConnection();
+        connection.Open();
+        var inserted = connection.BulkInsertAndSelect(data).ToList();
+        for (var i = 0; i < data.Count; i++)
+        {
+            IsValidInsert(inserted[i], data[i]);
+        }
     }
 
     private static void IsValidInsert(CustomColumnName inserted, CustomColumnName toBeInserted)
